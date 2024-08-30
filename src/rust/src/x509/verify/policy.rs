@@ -123,16 +123,18 @@ impl PyExtensionValidatorPresent {
     }
 }
 
-fn cert_to_py_cert(py: pyo3::Python<'_>, cert: &Certificate<'_>) -> Result<PyCertificate, String> {
+fn cert_to_py_cert(
+    py: pyo3::Python<'_>,
+    cert: &Certificate<'_>,
+) -> CryptographyResult<PyCertificate> {
     // TODO: can this be done better?..
-    let data = asn1::write_single(cert).map_err(|e| e.to_string())?;
+    let data = asn1::write_single(cert)?;
     let owned_cert = OwnedCertificate::try_new(
         pyo3::types::PyBytes::new_bound(py, data.as_slice())
             .as_unbound()
             .clone_ref(py),
         |bytes| asn1::parse_single(bytes.as_bytes(py)),
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(PyCertificate {
         raw: owned_cert,
         cached_extensions: pyo3::sync::GILOnceCell::new(),
@@ -152,25 +154,34 @@ fn make_python_callback_args<'p>(
     ),
     ValidationError,
 > {
-    let py_policy = PyPolicy::from_rust_policy(py, policy)?;
+    let py_policy = PyPolicy::from_rust_policy(py, policy).map_err(|e| {
+        ValidationError::Other(format!("{e} (while converting to python policy object)"))
+    })?;
     let py_cert = cert_to_py_cert(py, cert).map_err(|e| {
-        ValidationError::Other(format!("While converting to python certificate: {e}"))
+        ValidationError::Other(format!(
+            "{e} (while converting to python certificate object)"
+        ))
     })?;
     let py_ext = match ext {
         None => None,
-        Some(ext) => parse_cert_ext(py, ext)?,
+        Some(ext) => parse_cert_ext(py, ext).map_err(|e| {
+            ValidationError::Other(format!(
+                "{} (while converting to python extension object)",
+                Into::<pyo3::PyErr>::into(e)
+            ))
+        })?,
     };
 
     Ok((py_policy, py_cert, py_ext))
 }
 
 fn invoke_py_validator_callback(
-    py: &pyo3::Python<'_>,
+    py: pyo3::Python<'_>,
     py_cb: &pyo3::PyObject,
     args: impl pyo3::IntoPy<pyo3::Py<pyo3::types::PyTuple>>,
 ) -> Result<(), ValidationError> {
     let result = py_cb
-        .bind(*py)
+        .bind(py)
         .call1(args)
         .map_err(|e| ValidationError::Other(format!("Python validator failed: {}", e)))?;
 
@@ -198,7 +209,7 @@ impl<'a> PyExtensionValidatorMaybePresent {
                       -> Result<(), ValidationError> {
                     pyo3::Python::with_gil(|py| -> Result<(), ValidationError> {
                         let args = make_python_callback_args(py, policy, cert, ext)?;
-                        invoke_py_validator_callback(&py, &py_cb, args)
+                        invoke_py_validator_callback(py, &py_cb, args)
                     })
                 },
             )
@@ -230,7 +241,7 @@ impl<'a> PyExtensionValidatorPresent {
                         let args = make_python_callback_args(py, policy, cert, Some(ext))?;
                         let args = (args.0, args.1, args.2.unwrap());
 
-                        invoke_py_validator_callback(&py, &py_cb, args)
+                        invoke_py_validator_callback(py, &py_cb, args)
                     })
                 },
             )
@@ -295,7 +306,7 @@ impl PyExtensionPolicy {
     module = "cryptography.x509.verification",
     name = "OpaqueExtensionValidator"
 )]
-/// Used to store default rust extension validators in PyExtensionPolicy
+/// Used to store default rust extension validators in PyExtensionPolicy.
 struct PyOpaqueExtensionValidator(ExtensionValidator<'static, PyCryptoOps>);
 
 impl PyExtensionPolicy {
@@ -387,7 +398,7 @@ impl PyPolicy {
     fn from_rust_policy(
         py: pyo3::Python<'_>,
         policy: &Policy<'_, PyCryptoOps>,
-    ) -> CryptographyResult<PyPolicy> {
+    ) -> pyo3::PyResult<PyPolicy> {
         let subject = if let Some(subject) = &policy.subject {
             Some(
                 match subject {

@@ -5,7 +5,6 @@ use cryptography_x509::{
     certificate::Certificate, extensions::SubjectAlternativeName, oid::SUBJECT_ALTERNATIVE_NAME_OID,
 };
 
-use cryptography_x509_verification::ValidationError;
 use cryptography_x509_verification::{
     ops::{CryptoOps, VerificationCertificate},
     policy::{Policy, Subject},
@@ -19,7 +18,7 @@ use crate::backend::keys;
 use crate::error::{CryptographyError, CryptographyResult};
 use crate::types;
 use crate::x509::certificate::Certificate as PyCertificate;
-use crate::x509::common::{datetime_to_py, parse_general_names};
+use crate::x509::common::{datetime_now, datetime_to_py, parse_general_names};
 use crate::x509::sign;
 
 #[derive(Clone)]
@@ -54,13 +53,6 @@ pyo3::create_exception!(
     VerificationError,
     pyo3::exceptions::PyException
 );
-
-impl From<CryptographyError> for ValidationError {
-    fn from(_: CryptographyError) -> ValidationError {
-        // TODO: propagate the error properly
-        ValidationError::Other("Internal Error".to_string())
-    }
-}
 
 pub(super) type PyCryptoOpsPolicy<'a> = Policy<'a, PyCryptoOps>;
 
@@ -274,53 +266,6 @@ impl PyServerVerifier {
     }
 }
 
-pub(super) fn build_subject_owner(
-    py: pyo3::Python<'_>,
-    subject: &pyo3::Py<pyo3::PyAny>,
-) -> pyo3::PyResult<SubjectOwner> {
-    let subject = subject.bind(py);
-
-    if subject.is_instance(&types::DNS_NAME.get(py)?)? {
-        let value = subject
-            .getattr(pyo3::intern!(py, "value"))?
-            // TODO: switch this to borrowing the string (using Bound::to_str) once our
-            // minimum Python version is 3.10
-            .extract::<String>()?;
-        Ok(SubjectOwner::DNSName(value))
-    } else if subject.is_instance(&types::IP_ADDRESS.get(py)?)? {
-        let value = subject
-            .getattr(pyo3::intern!(py, "_packed"))?
-            .call0()?
-            .downcast::<pyo3::types::PyBytes>()?
-            .clone();
-        Ok(SubjectOwner::IPAddress(value.unbind()))
-    } else {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "unsupported subject type",
-        ))
-    }
-}
-
-pub(super) fn build_subject<'a>(
-    py: pyo3::Python<'_>,
-    subject: &'a SubjectOwner,
-) -> pyo3::PyResult<Subject<'a>> {
-    match subject {
-        SubjectOwner::DNSName(dns_name) => {
-            let dns_name = DNSName::new(dns_name)
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid domain name"))?;
-
-            Ok(Subject::DNS(dns_name))
-        }
-        SubjectOwner::IPAddress(ip_addr) => {
-            let ip_addr = IPAddress::from_bytes(ip_addr.as_bytes(py))
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid IP address"))?;
-
-            Ok(Subject::IP(ip_addr))
-        }
-    }
-}
-
 type PyCryptoOpsStore<'a> = Store<'a, PyCryptoOps>;
 
 self_cell::self_cell!(
@@ -359,6 +304,121 @@ impl PyStore {
                     )
                 }))
             }),
+        })
+    }
+}
+
+fn build_subject_owner(
+    py: pyo3::Python<'_>,
+    subject: &pyo3::Py<pyo3::PyAny>,
+) -> pyo3::PyResult<SubjectOwner> {
+    let subject = subject.bind(py);
+
+    if subject.is_instance(&types::DNS_NAME.get(py)?)? {
+        let value = subject
+            .getattr(pyo3::intern!(py, "value"))?
+            // TODO: switch this to borrowing the string (using Bound::to_str) once our
+            // minimum Python version is 3.10
+            .extract::<String>()?;
+        Ok(SubjectOwner::DNSName(value))
+    } else if subject.is_instance(&types::IP_ADDRESS.get(py)?)? {
+        let value = subject
+            .getattr(pyo3::intern!(py, "_packed"))?
+            .call0()?
+            .downcast::<pyo3::types::PyBytes>()?
+            .clone();
+        Ok(SubjectOwner::IPAddress(value.unbind()))
+    } else {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "unsupported subject type",
+        ))
+    }
+}
+
+fn build_subject<'a>(
+    py: pyo3::Python<'_>,
+    subject: &'a SubjectOwner,
+) -> pyo3::PyResult<Subject<'a>> {
+    match subject {
+        SubjectOwner::DNSName(dns_name) => {
+            let dns_name = DNSName::new(dns_name)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid domain name"))?;
+
+            Ok(Subject::DNS(dns_name))
+        }
+        SubjectOwner::IPAddress(ip_addr) => {
+            let ip_addr = IPAddress::from_bytes(ip_addr.as_bytes(py))
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid IP address"))?;
+
+            Ok(Subject::IP(ip_addr))
+        }
+    }
+}
+
+impl PyClientVerifier {
+    pub(super) fn new(
+        py: pyo3::Python<'_>,
+        store: &Option<pyo3::Py<PyStore>>,
+        time: &Option<asn1::DateTime>,
+        make_policy: impl Fn(asn1::DateTime) -> PyCryptoOpsPolicy<'static>,
+    ) -> CryptographyResult<PyClientVerifier> {
+        let store = match store.as_ref() {
+            Some(s) => s.clone_ref(py),
+            None => {
+                return Err(CryptographyError::from(
+                    pyo3::exceptions::PyValueError::new_err(
+                        "A client verifier must have a trust store.",
+                    ),
+                ));
+            }
+        };
+
+        let time = match time.as_ref() {
+            Some(t) => t.clone(),
+            None => datetime_now(py)?,
+        };
+
+        Ok(PyClientVerifier {
+            policy: make_policy(time),
+            store,
+        })
+    }
+}
+
+impl PyServerVerifier {
+    pub(super) fn new(
+        py: pyo3::Python<'_>,
+        store: &Option<pyo3::Py<PyStore>>,
+        time: &Option<asn1::DateTime>,
+        subject: pyo3::PyObject,
+        make_policy: impl Fn(Subject<'_>, asn1::DateTime) -> PyCryptoOpsPolicy<'_>,
+    ) -> CryptographyResult<PyServerVerifier> {
+        let store = match store {
+            Some(s) => s.clone_ref(py),
+            None => {
+                return Err(CryptographyError::from(
+                    pyo3::exceptions::PyValueError::new_err(
+                        "A server verifier must have a trust store.",
+                    ),
+                ));
+            }
+        };
+
+        let time = match time.as_ref() {
+            Some(t) => t.clone(),
+            None => datetime_now(py)?,
+        };
+        let subject_owner = build_subject_owner(py, &subject)?;
+
+        let policy = OwnedPolicy::try_new(subject_owner, |subject_owner| {
+            let subject = build_subject(py, subject_owner)?;
+            Ok::<PyCryptoOpsPolicy<'_>, pyo3::PyErr>(make_policy(subject, time))
+        })?;
+
+        Ok(PyServerVerifier {
+            py_subject: subject,
+            policy,
+            store,
         })
     }
 }

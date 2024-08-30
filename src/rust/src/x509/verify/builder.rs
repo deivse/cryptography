@@ -1,11 +1,8 @@
 use crate::error::{CryptographyError, CryptographyResult};
-use crate::x509::common::{datetime_now, py_to_datetime};
+use crate::x509::common::py_to_datetime;
 use cryptography_x509_verification::policy::Policy;
 
-use super::common::{
-    build_subject, build_subject_owner, OwnedPolicy, PyClientVerifier, PyCryptoOps,
-    PyCryptoOpsPolicy, PyServerVerifier, PyStore,
-};
+use super::common::{PyClientVerifier, PyCryptoOps, PyServerVerifier, PyStore};
 
 #[pyo3::pyclass(frozen, module = "cryptography.x509.verification")]
 pub(crate) struct PolicyBuilder {
@@ -77,25 +74,9 @@ impl PolicyBuilder {
     }
 
     fn build_client_verifier(&self, py: pyo3::Python<'_>) -> CryptographyResult<PyClientVerifier> {
-        let store = match self.store.as_ref() {
-            Some(s) => s.clone_ref(py),
-            None => {
-                return Err(CryptographyError::from(
-                    pyo3::exceptions::PyValueError::new_err(
-                        "A client verifier must have a trust store.",
-                    ),
-                ));
-            }
-        };
-
-        let time = match self.time.as_ref() {
-            Some(t) => t.clone(),
-            None => datetime_now(py)?,
-        };
-
-        let policy = Policy::web_pki_client(PyCryptoOps {}, time, self.max_chain_depth);
-
-        Ok(PyClientVerifier { policy, store })
+        PyClientVerifier::new(py, &self.store, &self.time, |time| {
+            Policy::web_pki_client(PyCryptoOps {}, time, self.max_chain_depth)
+        })
     }
 
     fn build_server_verifier(
@@ -103,37 +84,8 @@ impl PolicyBuilder {
         py: pyo3::Python<'_>,
         subject: pyo3::PyObject,
     ) -> CryptographyResult<PyServerVerifier> {
-        let store = match self.store.as_ref() {
-            Some(s) => s.clone_ref(py),
-            None => {
-                return Err(CryptographyError::from(
-                    pyo3::exceptions::PyValueError::new_err(
-                        "A server verifier must have a trust store.",
-                    ),
-                ));
-            }
-        };
-
-        let time = match self.time.as_ref() {
-            Some(t) => t.clone(),
-            None => datetime_now(py)?,
-        };
-        let subject_owner = build_subject_owner(py, &subject)?;
-
-        let policy = OwnedPolicy::try_new(subject_owner, |subject_owner| {
-            let subject = build_subject(py, subject_owner)?;
-            Ok::<PyCryptoOpsPolicy<'_>, pyo3::PyErr>(Policy::web_pki_server(
-                PyCryptoOps {},
-                subject,
-                time,
-                self.max_chain_depth,
-            ))
-        })?;
-
-        Ok(PyServerVerifier {
-            py_subject: subject,
-            policy,
-            store,
+        PyServerVerifier::new(py, &self.store, &self.time, subject, |subject, time| {
+            Policy::web_pki_server(PyCryptoOps {}, subject, time, self.max_chain_depth)
         })
     }
 }
