@@ -139,9 +139,10 @@ class TestClientVerifier:
         verified_client = verifier.verify(leaf, [])
         assert verified_client.chain == [leaf]
 
-        assert x509.DNSName("www.cryptography.io") in verified_client.subjects
-        assert x509.DNSName("cryptography.io") in verified_client.subjects
-        assert len(verified_client.subjects) == 2
+        assert x509.DNSName("www.cryptography.io") in verified_client.sans
+        assert x509.DNSName("cryptography.io") in verified_client.sans
+
+        assert len(verified_client.sans) == 2
 
     def test_verify_fails_renders_oid(self):
         leaf = _load_cert(

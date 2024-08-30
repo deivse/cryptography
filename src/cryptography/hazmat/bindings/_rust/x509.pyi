@@ -9,6 +9,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.padding import PSS, PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
+from cryptography.x509.extensions import ExtensionType
 
 def load_pem_x509_certificate(
     data: bytes, backend: typing.Any = None
@@ -58,6 +59,53 @@ class RevokedCertificate: ...
 class CertificateRevocationList: ...
 class CertificateSigningRequest: ...
 
+class Criticality:
+    NON_CRITICAL: Criticality
+    AGNOSTIC: Criticality
+    CRITICAL: Criticality
+
+class ExtensionValidatorNotPresent:
+    def __init__(self) -> None: ...
+
+class ExtensionValidatorMaybePresent:
+    def __init__(
+        self,
+        criticality: Criticality,
+        validator: typing.Callable[[None, Certificate, ExtensionType], None]
+        | None,
+    ) -> None: ...
+
+class ExtensionValidatorPresent:
+    def __init__(
+        self,
+        criticality: Criticality,
+        validator: typing.Callable[[None, Certificate, ExtensionType], None]
+        | None,
+    ) -> None: ...
+
+ExtensionValidator = (
+    ExtensionValidatorNotPresent
+    | ExtensionValidatorMaybePresent
+    | ExtensionValidatorPresent
+)
+
+class ExtensionPolicy:
+    authority_information_access: ExtensionValidator
+    authority_key_identifier: ExtensionValidator
+    subject_key_identifier: ExtensionValidator
+    key_usage: ExtensionValidator
+    subject_alternative_name: ExtensionValidator
+    basic_constraints: ExtensionValidator
+    name_constraints: ExtensionValidator
+    extended_key_usage: ExtensionValidator
+
+    @staticmethod
+    def permit_all() -> ExtensionPolicy: ...
+    @staticmethod
+    def web_pki_defaults_ca() -> ExtensionPolicy: ...
+    @staticmethod
+    def web_pki_defaults_ee() -> ExtensionPolicy: ...
+
 class PolicyBuilder:
     def time(self, new_time: datetime.datetime) -> PolicyBuilder: ...
     def store(self, new_store: Store) -> PolicyBuilder: ...
@@ -67,9 +115,29 @@ class PolicyBuilder:
         self, subject: x509.verification.Subject
     ) -> ServerVerifier: ...
 
+class CustomPolicyBuilder:
+    def time(self, new_time: datetime.datetime) -> CustomPolicyBuilder: ...
+    def store(self, new_store: Store) -> CustomPolicyBuilder: ...
+    def max_chain_depth(
+        self, new_max_chain_depth: int
+    ) -> CustomPolicyBuilder: ...
+    def eku(self, new_eku: x509.ObjectIdentifier) -> CustomPolicyBuilder: ...
+    def ca_extension_policy(
+        self, new_ca_extension_policy: ExtensionPolicy
+    ) -> CustomPolicyBuilder: ...
+    def ee_extension_policy(
+        self, new_ee_extension_policy: ExtensionPolicy
+    ) -> CustomPolicyBuilder: ...
+    def build_client_verifier(self) -> ClientVerifier: ...
+    def build_server_verifier(
+        self, subject: x509.verification.Subject
+    ) -> ServerVerifier: ...
+
 class VerifiedClient:
     @property
-    def subjects(self) -> list[x509.GeneralName]: ...
+    def subject(self) -> x509.Name: ...
+    @property
+    def sans(self) -> list[x509.GeneralName]: ...
     @property
     def chain(self) -> list[x509.Certificate]: ...
 

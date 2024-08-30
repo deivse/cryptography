@@ -25,7 +25,10 @@ use cryptography_x509::oid::{
 use once_cell::sync::Lazy;
 
 use crate::ops::CryptoOps;
-use crate::policy::extension::{ca, common, ee, Criticality, ExtensionPolicy, ExtensionValidator};
+pub use crate::policy::extension::{
+    Criticality, ExtensionPolicy, ExtensionValidator, MaybeExtensionValidatorCallback,
+    PresentExtensionValidatorCallback,
+};
 use crate::types::{DNSName, DNSPattern, IPAddress};
 use crate::{ValidationError, VerificationCertificate};
 
@@ -176,7 +179,7 @@ pub enum Subject<'a> {
     IP(IPAddress),
 }
 
-impl Subject<'_> {
+impl<'a> Subject<'a> {
     fn subject_alt_name_matches(&self, general_name: &GeneralName<'_>) -> bool {
         match (general_name, self) {
             (GeneralName::DNSName(pattern), Self::DNS(name)) => {
@@ -216,7 +219,7 @@ pub struct Policy<'a, B: CryptoOps> {
     pub validation_time: asn1::DateTime,
 
     /// An extended key usage that must appear in EEs validated by this policy.
-    pub extended_key_usage: ObjectIdentifier,
+    pub extended_key_usage: Option<ObjectIdentifier>,
 
     /// The minimum RSA modulus, in bits.
     /// This is equivalent to the public key size, e.g. 2048 for an RSA-2048 key.
@@ -230,113 +233,29 @@ pub struct Policy<'a, B: CryptoOps> {
     /// algorithm identifiers.
     pub permitted_signature_algorithms: Arc<HashSet<AlgorithmIdentifier<'a>>>,
 
-    ca_extension_policy: ExtensionPolicy<B>,
-    ee_extension_policy: ExtensionPolicy<B>,
+    pub ca_extension_policy: ExtensionPolicy<'a, B>,
+    pub ee_extension_policy: ExtensionPolicy<'a, B>,
 }
 
-impl<'a, B: CryptoOps> Policy<'a, B> {
-    fn new(
+impl<'a, B: CryptoOps + 'a> Policy<'a, B> {
+    fn web_pki_defaults(
         ops: B,
         subject: Option<Subject<'a>>,
-        time: asn1::DateTime,
+        validation_time: asn1::DateTime,
         max_chain_depth: Option<u8>,
         extended_key_usage: ObjectIdentifier,
     ) -> Self {
         Self {
             ops,
-            max_chain_depth: max_chain_depth.unwrap_or(DEFAULT_MAX_CHAIN_DEPTH),
             subject,
-            validation_time: time,
-            extended_key_usage,
+            validation_time,
+            max_chain_depth: max_chain_depth.unwrap_or(DEFAULT_MAX_CHAIN_DEPTH),
+            extended_key_usage: Some(extended_key_usage),
             minimum_rsa_modulus: WEBPKI_MINIMUM_RSA_MODULUS,
             permitted_public_key_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SPKI_ALGORITHMS),
             permitted_signature_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS),
-            ca_extension_policy: ExtensionPolicy {
-                // 5280 4.2.2.1: Authority Information Access
-                authority_information_access: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    Some(common::authority_information_access),
-                ),
-                // 5280 4.2.1.1: Authority Key Identifier
-                authority_key_identifier: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    Some(ca::authority_key_identifier),
-                ),
-                // 5280 4.2.1.2: Subject Key Identifier
-                // NOTE: CABF requires SKI in CA certificates, but many older CAs lack it.
-                // We choose to be permissive here.
-                subject_key_identifier: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    None,
-                ),
-                // 5280 4.2.1.3: Key Usage
-                key_usage: ExtensionValidator::present(Criticality::Agnostic, Some(ca::key_usage)),
-                subject_alternative_name: ExtensionValidator::maybe_present(
-                    Criticality::Agnostic,
-                    None,
-                ),
-                // 5280 4.2.1.9: Basic Constraints
-                basic_constraints: ExtensionValidator::present(
-                    Criticality::Critical,
-                    Some(ca::basic_constraints),
-                ),
-                // 5280 4.2.1.10: Name Constraints
-                // NOTE: MUST be critical in 5280, but CABF relaxes to MAY.
-                name_constraints: ExtensionValidator::maybe_present(
-                    Criticality::Agnostic,
-                    Some(ca::name_constraints),
-                ),
-                // 5280: 4.2.1.12: Extended Key Usage
-                // NOTE: CABF requires EKUs in many non-root CA certs, but validators widely
-                // ignore this requirement and treat a missing EKU as "any EKU".
-                // We choose to be permissive here.
-                extended_key_usage: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    Some(ca::extended_key_usage),
-                ),
-            },
-            ee_extension_policy: ExtensionPolicy {
-                // 5280 4.2.2.1: Authority Information Access
-                authority_information_access: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    Some(common::authority_information_access),
-                ),
-                // 5280 4.2.1.1.: Authority Key Identifier
-                authority_key_identifier: ExtensionValidator::present(
-                    Criticality::NonCritical,
-                    None,
-                ),
-                subject_key_identifier: ExtensionValidator::maybe_present(
-                    Criticality::Agnostic,
-                    None,
-                ),
-                // 5280 4.2.1.3: Key Usage
-                key_usage: ExtensionValidator::maybe_present(
-                    Criticality::Agnostic,
-                    Some(ee::key_usage),
-                ),
-                // CA/B 7.1.2.7.12 Subscriber Certificate Subject Alternative Name
-                // This validator handles both client and server cases by only matching against
-                // the SAN if the profile contains a subject, which it won't in the client
-                // validation case.
-                subject_alternative_name: ExtensionValidator::present(
-                    Criticality::Agnostic,
-                    Some(ee::subject_alternative_name),
-                ),
-                // 5280 4.2.1.9: Basic Constraints
-                basic_constraints: ExtensionValidator::maybe_present(
-                    Criticality::Agnostic,
-                    Some(ee::basic_constraints),
-                ),
-                // 5280 4.2.1.10: Name Constraints
-                name_constraints: ExtensionValidator::not_present(),
-                // CA/B: 7.1.2.7.10: Subscriber Certificate Extended Key Usage
-                // NOTE: CABF requires EKUs in EE certs, while RFC 5280 does not.
-                extended_key_usage: ExtensionValidator::maybe_present(
-                    Criticality::NonCritical,
-                    Some(ee::extended_key_usage),
-                ),
-            },
+            ca_extension_policy: ExtensionPolicy::new_default_web_pki_ca(),
+            ee_extension_policy: ExtensionPolicy::new_default_web_pki_ee(),
         }
     }
 
@@ -346,8 +265,8 @@ impl<'a, B: CryptoOps> Policy<'a, B> {
     /// **IMPORTANT**: This is **not** the appropriate API for verifying
     /// website (i.e. server) certificates. For that, you **must** use
     /// [`Policy::server`].
-    pub fn client(ops: B, time: asn1::DateTime, max_chain_depth: Option<u8>) -> Self {
-        Self::new(
+    pub fn web_pki_client(ops: B, time: asn1::DateTime, max_chain_depth: Option<u8>) -> Self {
+        Self::web_pki_defaults(
             ops,
             None,
             time,
@@ -358,19 +277,42 @@ impl<'a, B: CryptoOps> Policy<'a, B> {
 
     /// Create a new policy with defaults for the server certificate profile
     /// defined in the CA/B Forum's Basic Requirements.
-    pub fn server(
+    pub fn web_pki_server(
         ops: B,
         subject: Subject<'a>,
         time: asn1::DateTime,
         max_chain_depth: Option<u8>,
     ) -> Self {
-        Self::new(
+        Self::web_pki_defaults(
             ops,
             Some(subject),
             time,
             max_chain_depth,
             EKU_SERVER_AUTH_OID.clone(),
         )
+    }
+
+    pub fn custom(
+        ops: B,
+        subject: Option<Subject<'a>>,
+        validation_time: asn1::DateTime,
+        max_chain_depth: Option<u8>,
+        extended_key_usage: Option<ObjectIdentifier>,
+        ca_extension_policy: ExtensionPolicy<'a, B>,
+        ee_extension_policy: ExtensionPolicy<'a, B>,
+    ) -> Self {
+        Self {
+            ops,
+            subject,
+            validation_time,
+            max_chain_depth: max_chain_depth.unwrap_or(DEFAULT_MAX_CHAIN_DEPTH),
+            extended_key_usage,
+            minimum_rsa_modulus: WEBPKI_MINIMUM_RSA_MODULUS,
+            permitted_public_key_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SPKI_ALGORITHMS),
+            permitted_signature_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS),
+            ca_extension_policy,
+            ee_extension_policy,
+        }
     }
 
     fn permits_basic(&self, cert: &Certificate<'_>) -> Result<(), ValidationError> {

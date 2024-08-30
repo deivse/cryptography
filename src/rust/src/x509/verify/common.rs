@@ -1,10 +1,11 @@
 // This file is dual licensed under the terms of the Apache License, Version
 // 2.0, and the BSD License. See the LICENSE file in the root of this repository
 // for complete details.
-
 use cryptography_x509::{
     certificate::Certificate, extensions::SubjectAlternativeName, oid::SUBJECT_ALTERNATIVE_NAME_OID,
 };
+
+use cryptography_x509_verification::ValidationError;
 use cryptography_x509_verification::{
     ops::{CryptoOps, VerificationCertificate},
     policy::{Policy, Subject},
@@ -12,16 +13,16 @@ use cryptography_x509_verification::{
     types::{DNSName, IPAddress},
 };
 use pyo3::types::{PyAnyMethods, PyListMethods};
+use pyo3::ToPyObject;
 
 use crate::backend::keys;
 use crate::error::{CryptographyError, CryptographyResult};
 use crate::types;
 use crate::x509::certificate::Certificate as PyCertificate;
-use crate::x509::common::{datetime_now, datetime_to_py, py_to_datetime};
+use crate::x509::common::{datetime_to_py, parse_general_names};
 use crate::x509::sign;
 
-use super::parse_general_names;
-
+#[derive(Clone)]
 pub(crate) struct PyCryptoOps {}
 
 impl CryptoOps for PyCryptoOps {
@@ -54,141 +55,17 @@ pyo3::create_exception!(
     pyo3::exceptions::PyException
 );
 
-#[pyo3::pyclass(frozen, module = "cryptography.x509.verification")]
-pub(crate) struct PolicyBuilder {
-    time: Option<asn1::DateTime>,
-    store: Option<pyo3::Py<PyStore>>,
-    max_chain_depth: Option<u8>,
-}
-
-#[pyo3::pymethods]
-impl PolicyBuilder {
-    #[new]
-    fn new() -> PolicyBuilder {
-        PolicyBuilder {
-            time: None,
-            store: None,
-            max_chain_depth: None,
-        }
-    }
-
-    fn time(
-        &self,
-        py: pyo3::Python<'_>,
-        new_time: pyo3::Bound<'_, pyo3::PyAny>,
-    ) -> CryptographyResult<PolicyBuilder> {
-        if self.time.is_some() {
-            return Err(CryptographyError::from(
-                pyo3::exceptions::PyValueError::new_err(
-                    "The validation time may only be set once.",
-                ),
-            ));
-        }
-        Ok(PolicyBuilder {
-            time: Some(py_to_datetime(py, new_time)?),
-            store: self.store.as_ref().map(|s| s.clone_ref(py)),
-            max_chain_depth: self.max_chain_depth,
-        })
-    }
-
-    fn store(&self, new_store: pyo3::Py<PyStore>) -> CryptographyResult<PolicyBuilder> {
-        if self.store.is_some() {
-            return Err(CryptographyError::from(
-                pyo3::exceptions::PyValueError::new_err("The trust store may only be set once."),
-            ));
-        }
-        Ok(PolicyBuilder {
-            time: self.time.clone(),
-            store: Some(new_store),
-            max_chain_depth: self.max_chain_depth,
-        })
-    }
-
-    fn max_chain_depth(
-        &self,
-        py: pyo3::Python<'_>,
-        new_max_chain_depth: u8,
-    ) -> CryptographyResult<PolicyBuilder> {
-        if self.max_chain_depth.is_some() {
-            return Err(CryptographyError::from(
-                pyo3::exceptions::PyValueError::new_err(
-                    "The maximum chain depth may only be set once.",
-                ),
-            ));
-        }
-        Ok(PolicyBuilder {
-            time: self.time.clone(),
-            store: self.store.as_ref().map(|s| s.clone_ref(py)),
-            max_chain_depth: Some(new_max_chain_depth),
-        })
-    }
-
-    fn build_client_verifier(&self, py: pyo3::Python<'_>) -> CryptographyResult<PyClientVerifier> {
-        let store = match self.store.as_ref() {
-            Some(s) => s.clone_ref(py),
-            None => {
-                return Err(CryptographyError::from(
-                    pyo3::exceptions::PyValueError::new_err(
-                        "A client verifier must have a trust store.",
-                    ),
-                ));
-            }
-        };
-
-        let time = match self.time.as_ref() {
-            Some(t) => t.clone(),
-            None => datetime_now(py)?,
-        };
-
-        let policy = PyCryptoPolicy(Policy::client(PyCryptoOps {}, time, self.max_chain_depth));
-
-        Ok(PyClientVerifier { policy, store })
-    }
-
-    fn build_server_verifier(
-        &self,
-        py: pyo3::Python<'_>,
-        subject: pyo3::PyObject,
-    ) -> CryptographyResult<PyServerVerifier> {
-        let store = match self.store.as_ref() {
-            Some(s) => s.clone_ref(py),
-            None => {
-                return Err(CryptographyError::from(
-                    pyo3::exceptions::PyValueError::new_err(
-                        "A server verifier must have a trust store.",
-                    ),
-                ));
-            }
-        };
-
-        let time = match self.time.as_ref() {
-            Some(t) => t.clone(),
-            None => datetime_now(py)?,
-        };
-        let subject_owner = build_subject_owner(py, &subject)?;
-
-        let policy = OwnedPolicy::try_new(subject_owner, |subject_owner| {
-            let subject = build_subject(py, subject_owner)?;
-            Ok::<PyCryptoPolicy<'_>, pyo3::PyErr>(PyCryptoPolicy(Policy::server(
-                PyCryptoOps {},
-                subject,
-                time,
-                self.max_chain_depth,
-            )))
-        })?;
-
-        Ok(PyServerVerifier {
-            py_subject: subject,
-            policy,
-            store,
-        })
+impl From<CryptographyError> for ValidationError {
+    fn from(_: CryptographyError) -> ValidationError {
+        // TODO: propagate the error properly
+        ValidationError::Other("Internal Error".to_string())
     }
 }
 
-struct PyCryptoPolicy<'a>(Policy<'a, PyCryptoOps>);
+pub(super) type PyCryptoOpsPolicy<'a> = Policy<'a, PyCryptoOps>;
 
 /// This enum exists solely to provide heterogeneously typed ownership for `OwnedPolicy`.
-enum SubjectOwner {
+pub(super) enum SubjectOwner {
     // TODO: Switch this to `Py<PyString>` once Pyo3's `to_str()` preserves a
     // lifetime relationship between an a `PyString` and its borrowed `&str`
     // reference in all limited API builds. PyO3 can't currently do that in
@@ -199,11 +76,11 @@ enum SubjectOwner {
 }
 
 self_cell::self_cell!(
-    struct OwnedPolicy {
+    pub(super) struct OwnedPolicy {
         owner: SubjectOwner,
 
         #[covariant]
-        dependent: PyCryptoPolicy,
+        dependent: PyCryptoOpsPolicy,
     }
 );
 
@@ -214,7 +91,9 @@ self_cell::self_cell!(
 )]
 pub(crate) struct PyVerifiedClient {
     #[pyo3(get)]
-    subjects: pyo3::Py<pyo3::PyAny>,
+    subject: pyo3::Py<pyo3::PyAny>,
+    #[pyo3(get)]
+    sans: Option<pyo3::Py<pyo3::PyAny>>,
     #[pyo3(get)]
     chain: pyo3::Py<pyo3::types::PyList>,
 }
@@ -225,14 +104,14 @@ pub(crate) struct PyVerifiedClient {
     module = "cryptography.hazmat.bindings._rust.x509"
 )]
 pub(crate) struct PyClientVerifier {
-    policy: PyCryptoPolicy<'static>,
+    pub(super) policy: PyCryptoOpsPolicy<'static>,
     #[pyo3(get)]
-    store: pyo3::Py<PyStore>,
+    pub(super) store: pyo3::Py<PyStore>,
 }
 
 impl PyClientVerifier {
     fn as_policy(&self) -> &Policy<'_, PyCryptoOps> {
-        &self.policy.0
+        &self.policy
     }
 }
 
@@ -289,22 +168,32 @@ impl PyClientVerifier {
             py_chain.append(c.extra())?;
         }
 
-        // NOTE: These `unwrap()`s cannot fail, since the underlying policy
-        // enforces the presence of a SAN and the well-formedness of the
-        // extension set.
-        let leaf_san = &chain[0]
-            .certificate()
-            .extensions()
-            .ok()
-            .unwrap()
-            .get_extension(&SUBJECT_ALTERNATIVE_NAME_OID)
-            .unwrap();
+        let cert = &chain[0].certificate();
 
-        let leaf_gns = leaf_san.value::<SubjectAlternativeName<'_>>()?;
-        let py_gns = parse_general_names(py, &leaf_gns)?;
+        let py_sans = || -> pyo3::PyResult<Option<pyo3::PyObject>> {
+            let leaf_san_ext = cert
+                .extensions()
+                .ok()
+                .unwrap()
+                .get_extension(&SUBJECT_ALTERNATIVE_NAME_OID);
+
+            match leaf_san_ext {
+                Some(leaf_san) => {
+                    let leaf_gns = leaf_san
+                        .value::<SubjectAlternativeName<'_>>()
+                        .map_err(|e| -> CryptographyError { e.into() })?;
+                    let py_gns = parse_general_names(py, &leaf_gns)?;
+                    Ok(Some(py_gns))
+                }
+                None => Ok(None),
+            }
+        }()?;
+
+        let py_subject = crate::x509::parse_name(py, cert.subject())?;
 
         Ok(PyVerifiedClient {
-            subjects: py_gns,
+            subject: py_subject.to_object(py),
+            sans: py_sans,
             chain: py_chain.unbind(),
         })
     }
@@ -317,15 +206,15 @@ impl PyClientVerifier {
 )]
 pub(crate) struct PyServerVerifier {
     #[pyo3(get, name = "subject")]
-    py_subject: pyo3::Py<pyo3::PyAny>,
-    policy: OwnedPolicy,
+    pub(super) py_subject: pyo3::Py<pyo3::PyAny>,
+    pub(super) policy: OwnedPolicy,
     #[pyo3(get)]
-    store: pyo3::Py<PyStore>,
+    pub(super) store: pyo3::Py<PyStore>,
 }
 
 impl PyServerVerifier {
     fn as_policy(&self) -> &Policy<'_, PyCryptoOps> {
-        &self.policy.borrow_dependent().0
+        self.policy.borrow_dependent()
     }
 }
 
@@ -385,7 +274,7 @@ impl PyServerVerifier {
     }
 }
 
-fn build_subject_owner(
+pub(super) fn build_subject_owner(
     py: pyo3::Python<'_>,
     subject: &pyo3::Py<pyo3::PyAny>,
 ) -> pyo3::PyResult<SubjectOwner> {
@@ -412,7 +301,7 @@ fn build_subject_owner(
     }
 }
 
-fn build_subject<'a>(
+pub(super) fn build_subject<'a>(
     py: pyo3::Python<'_>,
     subject: &'a SubjectOwner,
 ) -> pyo3::PyResult<Subject<'a>> {
