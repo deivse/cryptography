@@ -9,7 +9,7 @@ pub(crate) use common::{
 };
 pub(crate) use policy::{
     PyCriticality, PyExtensionPolicy, PyExtensionValidatorMaybePresent,
-    PyExtensionValidatorNotPresent, PyExtensionValidatorPresent,
+    PyExtensionValidatorNotPresent, PyExtensionValidatorPresent, PyPolicy,
 };
 
 pub(crate) use custom_builder::CustomPolicyBuilder;

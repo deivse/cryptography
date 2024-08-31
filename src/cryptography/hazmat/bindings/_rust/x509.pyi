@@ -71,7 +71,7 @@ class ExtensionValidatorMaybePresent:
     def __init__(
         self,
         criticality: Criticality,
-        validator: typing.Callable[[None, Certificate, ExtensionType], None]
+        validator: typing.Callable[[Policy, Certificate, ExtensionType], None]
         | None,
     ) -> None: ...
 
@@ -79,7 +79,7 @@ class ExtensionValidatorPresent:
     def __init__(
         self,
         criticality: Criticality,
-        validator: typing.Callable[[None, Certificate, ExtensionType], None]
+        validator: typing.Callable[[Policy, Certificate, ExtensionType], None]
         | None,
     ) -> None: ...
 
@@ -105,6 +105,18 @@ class ExtensionPolicy:
     def web_pki_defaults_ca() -> ExtensionPolicy: ...
     @staticmethod
     def web_pki_defaults_ee() -> ExtensionPolicy: ...
+
+class Policy:
+    @property
+    def max_chain_depth(self) -> int: ...
+    @property
+    def subject(self) -> x509.DNSName | x509.IPAddress | None: ...
+    @property
+    def validation_time(self) -> datetime.datetime: ...
+    @property
+    def extended_key_usage(self) -> x509.ObjectIdentifier | None: ...
+    @property
+    def minimum_rsa_modulus(self) -> int | None: ...
 
 class PolicyBuilder:
     def time(self, new_time: datetime.datetime) -> PolicyBuilder: ...

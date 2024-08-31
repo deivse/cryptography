@@ -183,7 +183,7 @@ fn invoke_py_validator_callback(
     let result = py_cb
         .bind(py)
         .call1(args)
-        .map_err(|e| ValidationError::Other(format!("Python validator failed: {}", e)))?;
+        .map_err(|e| ValidationError::Other(format!("Python extension validator failed: {}", e)))?;
 
     if !result.is_none() {
         Err(ValidationError::Other(

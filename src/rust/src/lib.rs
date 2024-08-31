@@ -134,7 +134,7 @@ mod _rust {
         use crate::x509::verify::{
             CustomPolicyBuilder, PolicyBuilder, PyClientVerifier, PyCriticality, PyExtensionPolicy,
             PyExtensionValidatorMaybePresent, PyExtensionValidatorNotPresent,
-            PyExtensionValidatorPresent, PyServerVerifier, PyStore, PyVerifiedClient,
+            PyExtensionValidatorPresent, PyPolicy, PyServerVerifier, PyStore, PyVerifiedClient,
             VerificationError,
         };
     }
