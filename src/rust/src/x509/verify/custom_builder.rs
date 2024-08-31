@@ -1,3 +1,4 @@
+use cryptography_x509::oid::ALL_EKU_OIDS;
 use cryptography_x509_verification::policy::{ExtensionPolicy, Policy};
 
 use crate::asn1::py_oid_to_oid;
@@ -13,8 +14,8 @@ pub(crate) struct CustomPolicyBuilder {
     store: Option<pyo3::Py<PyStore>>,
     max_chain_depth: Option<u8>,
     eku: Option<asn1::ObjectIdentifier>,
-    ca_ext_policy: ExtensionPolicy<'static, PyCryptoOps>,
-    ee_ext_policy: ExtensionPolicy<'static, PyCryptoOps>,
+    ca_ext_policy: Option<ExtensionPolicy<'static, PyCryptoOps>>,
+    ee_ext_policy: Option<ExtensionPolicy<'static, PyCryptoOps>>,
 }
 
 #[pyo3::pymethods]
@@ -26,8 +27,8 @@ impl CustomPolicyBuilder {
             store: None,
             max_chain_depth: None,
             eku: None,
-            ca_ext_policy: ExtensionPolicy::new_default_web_pki_ca(),
-            ee_ext_policy: ExtensionPolicy::new_default_web_pki_ee(),
+            ca_ext_policy: None,
+            ee_ext_policy: None,
         }
     }
 
@@ -103,6 +104,15 @@ impl CustomPolicyBuilder {
         }
 
         let oid = py_oid_to_oid(new_eku)?;
+
+        if !ALL_EKU_OIDS.contains(&oid) {
+            return Err(CryptographyError::from(
+                pyo3::exceptions::PyValueError::new_err(
+                    "Unknown EKU OID. Only EKUs from x509.ExtendedKeyUsageOID are supported.",
+                ),
+            ));
+        }
+
         Ok(CustomPolicyBuilder {
             time: self.time.clone(),
             store: self.store.as_ref().map(|s| s.clone_ref(py)),
@@ -118,13 +128,21 @@ impl CustomPolicyBuilder {
         py: pyo3::Python<'_>,
         new_policy: &pyo3::Bound<'_, PyExtensionPolicy>,
     ) -> CryptographyResult<CustomPolicyBuilder> {
+        if self.ca_ext_policy.is_some() {
+            return Err(CryptographyError::from(
+                pyo3::exceptions::PyValueError::new_err(
+                    "The CA extension policy may only be set once.",
+                ),
+            ));
+        }
+
         let new_policy = new_policy.borrow().to_rust_extension_policy(py)?;
         Ok(CustomPolicyBuilder {
             time: self.time.clone(),
             store: self.store.as_ref().map(|s| s.clone_ref(py)),
             max_chain_depth: self.max_chain_depth,
             eku: self.eku.clone(),
-            ca_ext_policy: new_policy,
+            ca_ext_policy: Some(new_policy),
             ee_ext_policy: self.ee_ext_policy.clone(),
         })
     }
@@ -134,6 +152,14 @@ impl CustomPolicyBuilder {
         py: pyo3::Python<'_>,
         new_policy: &pyo3::Bound<'_, PyExtensionPolicy>,
     ) -> CryptographyResult<CustomPolicyBuilder> {
+        if self.ee_ext_policy.is_some() {
+            return Err(CryptographyError::from(
+                pyo3::exceptions::PyValueError::new_err(
+                    "The EE extension policy may only be set once.",
+                ),
+            ));
+        }
+
         let new_policy = new_policy.borrow().to_rust_extension_policy(py)?;
         Ok(CustomPolicyBuilder {
             time: self.time.clone(),
@@ -141,7 +167,7 @@ impl CustomPolicyBuilder {
             max_chain_depth: self.max_chain_depth,
             eku: self.eku.clone(),
             ca_ext_policy: self.ca_ext_policy.clone(),
-            ee_ext_policy: new_policy,
+            ee_ext_policy: Some(new_policy),
         })
     }
 
@@ -153,8 +179,12 @@ impl CustomPolicyBuilder {
                 time,
                 self.max_chain_depth,
                 self.eku.clone(),
-                self.ca_ext_policy.clone(),
-                self.ee_ext_policy.clone(),
+                self.ca_ext_policy
+                    .clone()
+                    .unwrap_or(ExtensionPolicy::new_default_web_pki_ca()),
+                self.ee_ext_policy
+                    .clone()
+                    .unwrap_or(ExtensionPolicy::new_default_web_pki_ee()),
             )
         })
     }
@@ -171,8 +201,12 @@ impl CustomPolicyBuilder {
                 time,
                 self.max_chain_depth,
                 self.eku.clone(),
-                self.ca_ext_policy.clone(),
-                self.ee_ext_policy.clone(),
+                self.ca_ext_policy
+                    .clone()
+                    .unwrap_or(ExtensionPolicy::new_default_web_pki_ca()),
+                self.ee_ext_policy
+                    .clone()
+                    .unwrap_or(ExtensionPolicy::new_default_web_pki_ee()),
             )
         })
     }
