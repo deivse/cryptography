@@ -11,11 +11,11 @@ from typing import Type, Union
 import pytest
 
 from cryptography import x509
-from cryptography.hazmat._oid import (
+from cryptography.x509.general_name import DNSName, IPAddress
+from cryptography.x509.oid import (
     AuthorityInformationAccessOID,
     ExtendedKeyUsageOID,
 )
-from cryptography.x509.general_name import DNSName, IPAddress
 from cryptography.x509.verification import (
     CustomPolicyBuilder,
     PolicyBuilder,
