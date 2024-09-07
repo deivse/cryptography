@@ -1,4 +1,4 @@
-use cryptography_x509::oid::ALL_EKU_OIDS;
+use cryptography_x509::oid::{ALL_EKU_OIDS, EKU_CLIENT_AUTH_OID, EKU_SERVER_AUTH_OID};
 use cryptography_x509_verification::policy::{ExtensionPolicy, Policy};
 
 use crate::asn1::py_oid_to_oid;
@@ -178,7 +178,7 @@ impl CustomPolicyBuilder {
                 None,
                 time,
                 self.max_chain_depth,
-                self.eku.clone(),
+                self.eku.clone().unwrap_or(EKU_CLIENT_AUTH_OID),
                 self.ca_ext_policy
                     .clone()
                     .unwrap_or(ExtensionPolicy::new_default_web_pki_ca()),
@@ -200,7 +200,7 @@ impl CustomPolicyBuilder {
                 Some(subject),
                 time,
                 self.max_chain_depth,
-                self.eku.clone(),
+                self.eku.clone().unwrap_or(EKU_SERVER_AUTH_OID),
                 self.ca_ext_policy
                     .clone()
                     .unwrap_or(ExtensionPolicy::new_default_web_pki_ca()),

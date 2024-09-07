@@ -219,7 +219,7 @@ pub struct Policy<'a, B: CryptoOps> {
     pub validation_time: asn1::DateTime,
 
     /// An extended key usage that must appear in EEs validated by this policy.
-    pub extended_key_usage: Option<ObjectIdentifier>,
+    pub extended_key_usage: ObjectIdentifier,
 
     /// The minimum RSA modulus, in bits.
     /// This is equivalent to the public key size, e.g. 2048 for an RSA-2048 key.
@@ -250,7 +250,7 @@ impl<'a, B: CryptoOps + 'a> Policy<'a, B> {
             subject,
             validation_time,
             max_chain_depth: max_chain_depth.unwrap_or(DEFAULT_MAX_CHAIN_DEPTH),
-            extended_key_usage: Some(extended_key_usage),
+            extended_key_usage,
             minimum_rsa_modulus: WEBPKI_MINIMUM_RSA_MODULUS,
             permitted_public_key_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SPKI_ALGORITHMS),
             permitted_signature_algorithms: Arc::clone(&*WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS),
@@ -297,7 +297,7 @@ impl<'a, B: CryptoOps + 'a> Policy<'a, B> {
         subject: Option<Subject<'a>>,
         validation_time: asn1::DateTime,
         max_chain_depth: Option<u8>,
-        extended_key_usage: Option<ObjectIdentifier>,
+        extended_key_usage: ObjectIdentifier,
         ca_extension_policy: ExtensionPolicy<'a, B>,
         ee_extension_policy: ExtensionPolicy<'a, B>,
     ) -> Self {

@@ -389,7 +389,7 @@ pub(crate) struct PyPolicy {
     #[pyo3(get)]
     validation_time: pyo3::PyObject,
     #[pyo3(get)]
-    extended_key_usage: Option<pyo3::PyObject>,
+    extended_key_usage: pyo3::PyObject,
     #[pyo3(get)]
     minimum_rsa_modulus: usize,
 }
@@ -419,11 +419,9 @@ impl PyPolicy {
             None
         };
 
-        let extended_key_usage = if let Some(eku) = &policy.extended_key_usage {
-            Some(oid_to_py_oid(py, eku)?.as_unbound().clone_ref(py))
-        } else {
-            None
-        };
+        let extended_key_usage = oid_to_py_oid(py, &policy.extended_key_usage)?
+            .as_unbound()
+            .clone_ref(py);
 
         Ok(PyPolicy {
             max_chain_depth: policy.max_chain_depth,
